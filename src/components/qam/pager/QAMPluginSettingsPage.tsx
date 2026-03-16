@@ -13,6 +13,7 @@ import { SiGithub, SiKofi } from "react-icons/si";
 import { ReorderDspPagesButton } from '../../other/ReorderDspPages';
 import { useUpdateSetting } from '../../../hooks/useUpdateSetting';
 import { DisableProfileToastsToggle } from '../DisableProfileToastsToggle';
+import { PluginEnabledToggle } from '../PluginEnabledToggle';
 import { PluginManager } from '../../../controllers/PluginManager';
 import { observer } from 'mobx-react-lite';
 import { WaitToggle } from '../../waitable/WaitToggle';
@@ -33,6 +34,9 @@ export const QAMPluginSettingsPage: FC<{}> = ({ }) => {
                     <QAMHiglightable>
                         <ReorderDspPagesButton currentOrder={data.settings.dspPageOrder} onConfirm={useUpdateSetting('dspPageOrder')} />
                     </QAMHiglightable>}
+                <PanelSectionRow>
+                    <PluginEnabledToggle />
+                </PanelSectionRow>
                 <PanelSectionRow>
                     <EnableInDesktopToggle />
                 </PanelSectionRow>

@@ -24,6 +24,7 @@ export type PluginSettings = {
     dspPageOrder: DSPPageOrder;
     disableProfileToasts: boolean;
     restartPipelineOnDeviceDetect: string[];
+    pluginEnabled: boolean;
 };
 
 export type PluginStateData = {
