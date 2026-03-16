@@ -68,11 +68,13 @@ export class PluginManager {
 
             this.promises.pluginSettings = Backend.initUser(this.currentUser!.id, this.currentUser!.name, this.currentUser!.persona).catch((e) => useError('Problem initializing user', e));
             const settings = await this.promises.pluginSettings;
+            const shouldStart = !(settings instanceof Error) && settings.pluginEnabled !== false;
             if (uiMode === EUIMode.Desktop) {
-                if (!(settings instanceof Error) && settings.enableInDesktop) this.start();
+                if (shouldStart && settings.enableInDesktop) this.start();
                 else this.killJDSP();
             } else {
-                this.start();
+                if (shouldStart) this.start();
+                else this.killJDSP();
             }
         }));
 
@@ -86,7 +88,7 @@ export class PluginManager {
         return dispose;
     }
 
-    private static async start() {
+    static async start() {
         profileManager.active = true;
         const audioDevices = (await SteamClient.System.Audio.GetDevices()).vecDevices.map(device => device.sName);
         audioDevices.forEach(device => !this.detectedAudioDevices.includes(device) && this.detectedAudioDevices.push(device));

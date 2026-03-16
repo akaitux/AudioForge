@@ -1,4 +1,4 @@
-name: Release
+name: Build & Release
 
 on:
   push:
@@ -6,7 +6,35 @@ on:
       - 'v*'
 
 jobs:
+  determine-build-type:
+    runs-on: ubuntu-latest
+    outputs:
+      is_test: ${{ steps.check.outputs.is_test }}
+      version: ${{ steps.check.outputs.version }}
+      build_name: ${{ steps.check.outputs.build_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine build type and version
+        id: check
+        run: |
+          tag="${{ github.ref_name }}"
+
+          # Check if this is a test tag (ends with -test)
+          if [[ "$tag" == *-test ]]; then
+            echo "is_test=true" >> "$GITHUB_OUTPUT"
+            version="${tag#v}"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "build_name=Test Release ${version}" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_test=false" >> "$GITHUB_OUTPUT"
+            version="${tag#v}"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "build_name=Release" >> "$GITHUB_OUTPUT"
+          fi
+
   build-plugin:
+    needs: determine-build-type
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,14 +48,14 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - name: Validate and set version from tag
+      - name: Validate and set version
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
+          version="${{ needs.determine-build-type.outputs.version }}"
+          is_test="${{ needs.determine-build-type.outputs.is_test }}"
 
-          # Must be semver: MAJOR.MINOR.PATCH with optional -prerelease suffix
+          # Validate semver format: MAJOR.MINOR.PATCH with optional -suffix
           if ! echo "$version" | grep -qP '^\d+\.\d+\.\d+(-[a-zA-Z0-9]+[a-zA-Z0-9.]*)?$'; then
-            echo "::error::Invalid version '${version}'. Must match MAJOR.MINOR.PATCH (e.g. v1.2.3 or v1.2.3-rc1)"
+            echo "::error::Invalid version '${version}'. Must match MAJOR.MINOR.PATCH (e.g. 1.2.3, 1.2.3-rc1, or 1.2.3-test)"
             exit 1
           fi
 
@@ -41,7 +69,7 @@ jobs:
             fi
           done
 
-          echo "Setting version to ${version}"
+          echo "Setting version to ${version} (test: ${is_test})"
           jq --arg v "$version" '.version = $v' plugin.json > plugin.json.tmp && mv plugin.json.tmp plugin.json
           jq --arg v "$version" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
 
@@ -84,6 +112,8 @@ jobs:
           path: AudioForge.zip
 
   check-flatpak-changes:
+    needs: determine-build-type
+    if: needs.determine-build-type.outputs.is_test == 'false'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.check.outputs.changed }}
@@ -126,8 +156,10 @@ jobs:
           fi
 
   build-flatpak:
-    needs: check-flatpak-changes
-    if: needs.check-flatpak-changes.outputs.changed == 'true'
+    needs: [determine-build-type, check-flatpak-changes]
+    if: |
+      (needs.determine-build-type.outputs.is_test == 'false' && needs.check-flatpak-changes.outputs.changed == 'true') ||
+      (needs.determine-build-type.outputs.is_test == 'true')
     runs-on: ubuntu-latest
     container:
       image: bilelmoussaoui/flatpak-github-actions:kde-6.7
@@ -148,8 +180,10 @@ jobs:
           path: jamesdsp.flatpak
 
   reuse-flatpak:
-    needs: check-flatpak-changes
-    if: needs.check-flatpak-changes.outputs.changed == 'false'
+    needs: [determine-build-type, check-flatpak-changes]
+    if: |
+      needs.determine-build-type.outputs.is_test == 'false' &&
+      needs.check-flatpak-changes.outputs.changed == 'false'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -168,7 +202,7 @@ jobs:
           path: jamesdsp.flatpak
 
   release:
-    needs: [build-plugin, build-flatpak, reuse-flatpak]
+    needs: [determine-build-type, build-plugin, build-flatpak, reuse-flatpak]
     if: always() && needs.build-plugin.result == 'success' && (needs.build-flatpak.result == 'success' || needs.reuse-flatpak.result == 'success')
     runs-on: ubuntu-latest
     permissions:
@@ -201,4 +235,6 @@ jobs:
           files: |
             AudioForge.zip
             jamesdsp.flatpak
-          generate_release_notes: true
+          prerelease: ${{ needs.determine-build-type.outputs.is_test == 'true' }}
+          name: ${{ needs.determine-build-type.outputs.build_name }}
+          generate_release_notes: ${{ needs.determine-build-type.outputs.is_test == 'false' }}
