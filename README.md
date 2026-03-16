@@ -40,6 +40,14 @@ curl -fsSL https://raw.githubusercontent.com/neoseek/AudioForge/master/install.s
 
 This downloads the latest release, extracts it to the Decky plugins directory, and restarts Decky Loader.
 
+### Prerelease Install
+
+To install the latest prerelease (test) build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/neoseek/AudioForge/master/install_prerelease.sh | bash
+```
+
 ### Manual Install (from source)
 
 ```bash
