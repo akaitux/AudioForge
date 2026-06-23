@@ -35,7 +35,7 @@ AudioForge ships a **patched JamesDSP flatpak** (`org.audioforge.jamesdsp`) that
 ### Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/neoseek/AudioForge/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/neoseek/AudioForge/steamos-3.8-volume-routing-fix/install.sh | bash
 ```
 
 This downloads the latest release, extracts it to the Decky plugins directory, and restarts Decky Loader.
@@ -45,7 +45,7 @@ This downloads the latest release, extracts it to the Decky plugins directory, a
 To install the latest prerelease (test) build:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/neoseek/AudioForge/master/install_prerelease.sh | bash
+curl -fsSL https://raw.githubusercontent.com/neoseek/AudioForge/steamos-3.8-volume-routing-fix/install_prerelease.sh | bash
 ```
 
 ### Manual Install (from source)
