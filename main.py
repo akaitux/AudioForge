@@ -116,12 +116,20 @@ class Plugin:
     async def _uninstall(self):
         log.info('Uninstalling plugin...')
 
+        # Reset audio state immediately before anything slow happens
+        self._reset_default_sink()
         flatpak_CMD(['kill', APPLICATION_ID], noCheck=True)
-        try: 
+
+        # Run the slow flatpak uninstall in a background thread so _uninstall()
+        # returns quickly. Decky won't block waiting for it and a rapid reinstall
+        # won't race against this.
+        asyncio.ensure_future(asyncio.to_thread(self._uninstall_jdsp_flatpak))
+
+    def _uninstall_jdsp_flatpak(self):
+        try:
             log.info('Uninstalling JamesDSP...')
             flatpak_CMD(['--user', '-y', 'uninstall', APPLICATION_ID])
-            log.info("JamesDSP uninstalled successfully")
-
+            log.info('JamesDSP uninstalled successfully')
         except subprocess.CalledProcessError as e:
             log.error('Problem uninstalling JamesDSP')
             log.error(e.stderr)
@@ -130,6 +138,8 @@ class Plugin:
         log.info('Unloading plugin...')
         await self._stop_volume_forwarder()
         flatpak_CMD(['kill', APPLICATION_ID], noCheck=True)
+        await self._wait_for_jdsp_sink_gone()
+        self._reset_default_sink()
         
     def _init_defaults(self):
         OnDisk.user.settings.setDefaults(Setting.defaults())
@@ -170,10 +180,11 @@ class Plugin:
             return True
 
         except subprocess.CalledProcessError as e:
-            if 'already installed' in (e.stderr or ''):
-                # A previous install may still be in progress or left a partial state.
+            stderr = e.stderr or ''
+            if 'transaction' in stderr.lower() or 'already installed' in stderr:
+                # A previous install/uninstall transaction is still in progress.
                 # Wait for it to finish, then re-check the version.
-                log.info('Install reported "already installed" — waiting for any in-progress install to complete...')
+                log.info('Install reported a conflicting transaction — waiting for it to complete...')
                 for attempt in range(6):
                     time.sleep(5)
                     installed_version = self._get_installed_jdsp_version()
@@ -371,11 +382,62 @@ class Plugin:
             await self._volume_forwarder.stop()
             self._volume_forwarder = None
 
+    async def _wait_for_jdsp_sink_gone(self, timeout=3.0):
+        """Poll until jamesdsp_sink disappears from PipeWire (max *timeout* seconds).
+
+        We must wait for the sink to vanish before calling _reset_default_sink(),
+        otherwise WirePlumber still sees jamesdsp_sink and may re-apply it as the
+        default right after we set loopback.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                result = subprocess.run(
+                    ['pactl', 'list', 'sinks', 'short'],
+                    capture_output=True, text=True, env=env
+                )
+                if JDSP_SINK_NAME not in result.stdout:
+                    log.info('jamesdsp_sink gone, restoring default sink')
+                    return
+            except Exception:
+                return
+            await asyncio.sleep(0.3)
+        log.warning('_wait_for_jdsp_sink_gone: timed out, restoring anyway')
+
+    def _reset_default_sink(self):
+        """Restore PA default sink to the loopback device.
+
+        Called after jamesdsp_sink has already disappeared, so WirePlumber has
+        already auto-migrated streams. We just confirm loopback as the default
+        so WirePlumber's saved preference is updated for the next session.
+        """
+        if not self._has_steamos_38_volume_policy():
+            return
+        try:
+            result = subprocess.run(
+                ['pactl', 'list', 'sinks', 'short'],
+                capture_output=True, text=True, env=env
+            )
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) >= 2 and 'loopback' in fields[1].lower():
+                    subprocess.run(
+                        ['pactl', 'set-default-sink', fields[1]],
+                        capture_output=True, text=True, env=env
+                    )
+                    log.info(f'Restored default sink to {fields[1]}')
+                    return
+            log.warning('_reset_default_sink: loopback sink not found')
+        except Exception as e:
+            log.warning(f'Failed to reset default sink: {e}')
+
     # general-frontend-call
     async def kill_jdsp(self):
         log.info('Killing JamesDSP')
         await self._stop_volume_forwarder()
         flatpak_CMD(['kill', APPLICATION_ID], noCheck=True)
+        await self._wait_for_jdsp_sink_gone()
+        self._reset_default_sink()
         
     async def force_pw_relink(self):
         timeout = 5
