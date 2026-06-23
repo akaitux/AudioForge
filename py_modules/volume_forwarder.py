@@ -264,3 +264,122 @@ class VolumeForwarder:
                 )
         except Exception:
             pass
+
+
+class SteamOS38VolumeForwarder:
+    """On SteamOS 3.8+, forward volume changes from jamesdsp_sink to the loopback sink.
+
+    On SteamOS 3.8, the audio chain is:
+      PA app → jamesdsp_sink (JamesDSP) → alsa_loopback sink → physical speaker node
+
+    Volume keys target jamesdsp_sink (the PA default), but JamesDSP's virtual sink
+    ignores its own PipeWire volume — it reads raw samples regardless of that value.
+    This class watches for volume changes on jamesdsp_sink and mirrors them to the
+    loopback sink, which is the real volume stage in the chain. ALSA hardware is left
+    at 100% (set at startup) so the physical node is not disturbed by amixer.
+    """
+
+    def __init__(self):
+        self._task = None
+        self._proc = None
+        self._last_volume = None
+        self._last_muted = None
+        self._loopback_sink = None
+
+    async def start(self):
+        self._loopback_sink = await asyncio.get_event_loop().run_in_executor(
+            None, self._find_loopback_sink
+        )
+        if not self._loopback_sink:
+            log.warning('SteamOS38VolumeForwarder: loopback sink not found; volume keys may not work')
+            return
+        if self._task and not self._task.done():
+            return
+        self._task = asyncio.ensure_future(self._monitor())
+        log.info(f'SteamOS 3.8 volume forwarder started (loopback: {self._loopback_sink})')
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        if self._proc:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+            self._proc = None
+        log.info('SteamOS 3.8 volume forwarder stopped')
+
+    def _find_loopback_sink(self):
+        """Return the PA sink name of the ALSA loopback device."""
+        try:
+            result = subprocess.run(
+                ['pactl', 'list', 'sinks', 'short'],
+                capture_output=True, text=True, env=env
+            )
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) >= 2 and 'loopback' in fields[1].lower():
+                    return fields[1]
+        except Exception as e:
+            log.warning(f'Failed to find loopback sink: {e}')
+        return None
+
+    async def _monitor(self):
+        while True:
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    'pactl', 'subscribe',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=env
+                )
+                await self._sync_volume()
+                async for line in self._proc.stdout:
+                    text = line.decode().strip()
+                    if "'change'" in text and 'sink' in text:
+                        await self._sync_volume()
+            except asyncio.CancelledError:
+                if self._proc:
+                    self._proc.terminate()
+                raise
+            except Exception as e:
+                log.warning(f'SteamOS38VolumeForwarder error: {e}, retrying...')
+                await asyncio.sleep(2)
+
+    async def _sync_volume(self):
+        try:
+            # @DEFAULT_AUDIO_SINK@ == jamesdsp_sink after _set_jdsp_as_default_sink()
+            volume, muted = await asyncio.get_event_loop().run_in_executor(
+                None, _get_sink_volume
+            )
+            if volume is None:
+                return
+            if volume == self._last_volume and muted == self._last_muted:
+                return
+            self._last_volume = volume
+            self._last_muted = muted
+            loopback = self._loopback_sink
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._apply_to_loopback, loopback, volume, muted
+            )
+        except Exception:
+            pass
+
+    def _apply_to_loopback(self, loopback_sink, volume, muted):
+        try:
+            pct = round(min(volume, 1.0) * 100)
+            subprocess.run(
+                ['pactl', 'set-sink-volume', loopback_sink, f'{pct}%'],
+                capture_output=True, text=True, env=env
+            )
+            subprocess.run(
+                ['pactl', 'set-sink-mute', loopback_sink, '1' if muted else '0'],
+                capture_output=True, text=True, env=env
+            )
+        except Exception as e:
+            log.warning(f'Failed to forward volume to loopback: {e}')

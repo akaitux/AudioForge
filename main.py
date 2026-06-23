@@ -12,15 +12,17 @@ from settings import SettingsManager
 from env import env
 from jdspproxy import JdspProxy
 from utils import SettingDef, compare_versions, flatpak_CMD, get_xauthority, wrap_error, restart_wireplumber, set_alsa_master_volume
-from volume_forwarder import VolumeForwarder
+from volume_forwarder import VolumeForwarder, SteamOS38VolumeForwarder
 
 import decky
 
 APPLICATION_ID = "org.audioforge.jamesdsp"
+JDSP_SINK_NAME = "jamesdsp_sink"
 JDSP_LOG_DIR =  os.path.join(decky.DECKY_PLUGIN_LOG_DIR, 'jdsp')
 JDSP_LOG = os.path.join(JDSP_LOG_DIR, 'jdsp.log')
 JDSP_FLATPAK_BUNDLE = os.path.join(decky.DECKY_PLUGIN_DIR, 'bin', 'jamesdsp.flatpak')
 JDSP_MIN_VER = '2.7.0'
+STEAMOS_VOLUME_POLICY_MIN_VER = '3.8'
 
 log = decky.logger
 
@@ -288,13 +290,80 @@ class Plugin:
         with open(JDSP_LOG, "w") as jdsp_log:
             subprocess.Popen(f'flatpak --user run {APPLICATION_ID} --tray', stdout=jdsp_log, stderr=jdsp_log, shell=True, env=new_env, universal_newlines=True)
         set_alsa_master_volume()
-        await self._start_volume_forwarder()
+        await self._set_jdsp_as_default_sink()
+        if self._has_steamos_38_volume_policy():
+            # jamesdsp_sink is the PA default but its PipeWire volume is ignored by
+            # JamesDSP. Forward volume changes to the loopback sink instead.
+            await self._start_volume_forwarder(steamos38=True)
+        else:
+            await self._start_volume_forwarder()
         return True # assume process has started ignoring errors so that the frontend doesn't hang. the jdsp process errors will be logged in its own file
 
-    async def _start_volume_forwarder(self):
+    def _has_steamos_38_volume_policy(self):
+        os_release = self._read_os_release()
+        return os_release.get('ID') == 'steamos' and compare_versions(os_release.get('VERSION_ID', '0'), STEAMOS_VOLUME_POLICY_MIN_VER) >= 0
+
+    async def _set_jdsp_as_default_sink(self):
+        for _ in range(20):
+            try:
+                sinks = subprocess.run(
+                    ['pactl', 'list', 'sinks', 'short'],
+                    capture_output=True, text=True, env=env
+                )
+                if JDSP_SINK_NAME in sinks.stdout:
+                    subprocess.run(
+                        ['pactl', 'set-default-sink', JDSP_SINK_NAME],
+                        capture_output=True, text=True, env=env
+                    )
+                    await self._move_sink_inputs_to_jdsp()
+                    log.info(f'Set default sink to {JDSP_SINK_NAME}')
+                    return
+            except Exception as e:
+                log.warning(f'Failed to set default sink to {JDSP_SINK_NAME}: {e}')
+                return
+            await asyncio.sleep(0.5)
+        log.warning(f'{JDSP_SINK_NAME} did not appear; leaving default sink unchanged')
+
+    async def _move_sink_inputs_to_jdsp(self):
+        try:
+            inputs = subprocess.run(
+                ['pactl', 'list', 'sink-inputs', 'short'],
+                capture_output=True, text=True, env=env
+            )
+            for line in inputs.stdout.splitlines():
+                fields = line.split()
+                if not fields:
+                    continue
+                subprocess.run(
+                    ['pactl', 'move-sink-input', fields[0], JDSP_SINK_NAME],
+                    capture_output=True, text=True, env=env
+                )
+        except Exception as e:
+            log.warning(f'Failed to move sink inputs to {JDSP_SINK_NAME}: {e}')
+
+    def _read_os_release(self):
+        result = {}
+        try:
+            with open('/etc/os-release', 'r') as file:
+                for line in file:
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+
+                    key, value = line.split('=', 1)
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                        value = value[1:-1]
+
+                    result[key] = value
+        except Exception as e:
+            log.warning(f'Failed to read /etc/os-release: {e}')
+
+        return result
+
+    async def _start_volume_forwarder(self, steamos38=False):
         if self._volume_forwarder:
             await self._volume_forwarder.stop()
-        self._volume_forwarder = VolumeForwarder()
+        self._volume_forwarder = SteamOS38VolumeForwarder() if steamos38 else VolumeForwarder()
         await self._volume_forwarder.start()
 
     async def _stop_volume_forwarder(self):

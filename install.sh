@@ -5,7 +5,7 @@ set -euo pipefail
 PLUGIN_NAME="AudioForge"
 PLUGINS_DIR="/home/deck/homebrew/plugins"
 TEMP_ZIP="/tmp/${PLUGIN_NAME}.zip"
-RELEASE_URL="https://github.com/neoseek/AudioForge/releases/latest/download/${PLUGIN_NAME}.zip"
+RELEASE_URL="https://github.com/akaitux/AudioForge/releases/latest/download/${PLUGIN_NAME}.zip"
 
 echo "Installing ${PLUGIN_NAME}..."
 
